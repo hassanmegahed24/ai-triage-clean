@@ -1,0 +1,14 @@
+Recent turns (doctor ↔ assistant):
+{{ turns }}
+
+Patient snapshot (use instead of re-asking):
+{{ snapshot }}
+
+TASK
+1) Silently extract **KNOWN FACTS** from the turns + snapshot.
+2) Ask **ONE** best next question that is **not already answered**; OR if discovery is essentially complete, propose a preview via:
+   - intent "propose_objective" with suggested_actions ["show_objective_preview"], or
+   - intent "propose_finalize" with suggested_actions ["show_soap_preview"].
+3) If the doctor explicitly asked to “pull from the record/database/snapshot”, include a **concise** summary of relevant snapshot facts in `speech_output`.
+
+Return ONLY the JSON per the system schema.

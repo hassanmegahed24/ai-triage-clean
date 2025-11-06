@@ -1,0 +1,8 @@
+Recent turns (doctor ↔ assistant):
+{{ turns }}
+
+Patient snapshot (to enrich objective data):
+{{ snapshot }}
+
+Produce the **Objective (Observation)** section only, per the system schema and requirements.
+Return ONLY the JSON.

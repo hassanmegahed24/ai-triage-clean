@@ -1,0 +1,14 @@
+preview_only={{ preview_only }}
+
+Recent turns (doctor ↔ assistant):
+{{ turns }}
+
+Patient snapshot (use to enrich S/O with known data):
+{{ snapshot }}
+
+Generate a **SOAP preview** per the system schema.
+- Use only available information; write "Unknown" where appropriate.
+- Each SOAP field should be highly informational and clinically useful.
+- Populate **next_steps** with concrete actions.
+
+Return ONLY the JSON per the system schema.

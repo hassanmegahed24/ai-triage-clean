@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>实时语音对话测试 Real-time voice conversation test</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans',sans-serif; margin:24px; }
+    h1 { margin: 0 0 12px; font-size: 22px; }
+    .row { margin: 8px 0; display:flex; gap:8px; flex-wrap:wrap; }
+    button { padding:8px 12px; }
+    #logs, #text, #soapBox { border:1px solid #ddd; padding:8px; min-height:60px; white-space:pre-wrap; }
+    #text { min-height: 80px; }
+    .cols { display:grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap:12px; }
+    .panel { border:1px solid #eee; padding:8px; border-radius:6px; background:#fafafa; }
+    .panel h4 { margin:0 0 6px; }
+  </style>
+</head>
+<body>
+  <h1>实时语音对话测试 Real-time voice conversation test(WebSocket)</h1>
+  <div class="row">
+    <button id="btn-start">Start</button>
+    <button id="btn-stop">Stop</button>
+    <button id="btn-finalize">Finalize SOAP</button>
+    <button id="btn-clear">Clear</button>
+  </div>
+
+  <div class="row" id="patientRow">
+    <label for="pid">Patient ID:</label>
+    <input id="pid" type="number" min="1" placeholder="Empty uses .env" style="width:180px; padding:6px;" />
+  </div>
+
+  <h3>SOAP Note</h3>
+  <div id="soapBox">
+    <div class="cols">
+      <div class="panel"><h4>Subjective</h4><div id="soap-subj"></div></div>
+      <div class="panel"><h4>Objective</h4><div id="soap-obj"></div></div>
+      <div class="panel"><h4>Assessment</h4><div id="soap-assess"></div></div>
+      <div class="panel"><h4>Plan</h4><div id="soap-plan"></div></div>
+    </div>
+  </div>
+
+  <h3>Logs</h3>
+  <div id="logs"></div>
+
+  <script>
+    const logs = document.getElementById('logs');
+    const textEl = document.getElementById('text');
+    const soapSubj = document.getElementById('soap-subj');
+    const soapObj = document.getElementById('soap-obj');
+    const soapAssess = document.getElementById('soap-assess');
+    const soapPlan = document.getElementById('soap-plan');
+    function log(msg){ logs.textContent += msg + "\n"; logs.scrollTop = logs.scrollHeight; }
+
+    let ws = null;
+    let micStream = null;
+    let audioCtxIn = null;
+    let audioCtxOut = null;
+    let processor = null;
+    let source = null;
+    let nextPlayTime = 0; // WebAudio serial playback
+    let finalizeAsked = false;
+    let sessionFinalized = false;
+    const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + (location.host || '127.0.0.1:8000') + '/realtime/ws';
+
+    function currentPid(){
+      const el = document.getElementById('pid');
+      if (!el) return null;
+      const v = (el.value || '').trim();
+      if (/^\d+$/.test(v)) return parseInt(v, 10);
+      return null;
+    }
+
+    function connectWS(){
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => log('WS open');
+      ws.onclose = () => log('WS close');
+      ws.onerror = (e) => log('WS error: ' + e);
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          // Note: do NOT reset audio context per message; it causes overlap/chorus
+
+          if (msg.type === 'response.text.delta') {
+            textEl.textContent += msg.delta;
+          } else if (msg.type === 'response.audio.delta') {
+            playPcm16Chunk(base64ToUint8Array(msg.audio));
+          } else if (msg.type === 'tts.mute' || msg.type === 'control.stop.ack' || msg.type === 'finalize.ack') {
+            hardMuteOut();
+          } else if (msg.type === 'soap.result') {
+            if (sessionFinalized) return;
+            if (!msg.preview) {
+              sessionFinalized = true;
+              const s = msg.soap || {};
+              soapSubj.textContent = s.subjective || '';
+              soapObj.textContent = s.objective || '';
+              soapAssess.textContent = Array.isArray(s.assessment) ? s.assessment.join('\n') : (s.assessment || '');
+              soapPlan.textContent = Array.isArray(s.plan) ? s.plan.join('\n') : (s.plan || '');
+              log('SOAP finalized');
+            }
+          } else if (msg.type === 'error') {
+            log('Server error: ' + msg.message);
+          }
+        } catch(e){ log('onmessage parse error: ' + e); }
+      };
+    }
+
+    function disconnectWS(){ if (ws) { ws.close(); ws = null; } }
+
+    function hardMuteOut(){
+      try { if (audioCtxOut) { audioCtxOut.close(); } } catch(_) {}
+      audioCtxOut = null;
+      nextPlayTime = 0;
+    }
+
+    async function startMic(){
+      if (!ws || ws.readyState !== WebSocket.OPEN) { connectWS(); await new Promise(r => setTimeout(r, 300)); }
+      audioCtxIn = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 48000,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false
+        });
+      } catch (e) { log('Mic permission failed: ' + e); return; }
+      source = audioCtxIn.createMediaStreamSource(micStream);
+      processor = audioCtxIn.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        const inBuf = e.inputBuffer.getChannelData(0);
+        const down = downsampleTo24k(inBuf, 48000, 24000);
+        const pcm = floatTo16BitPCM(down);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'audio.append', audio: base64FromArrayBuffer(pcm.buffer) }));
+        }
+      };
+      source.connect(processor);
+      processor.connect(audioCtxIn.destination);
+      log('Mic started');
+    }
+
+    async function stopMic(){
+      if (processor) { try { processor.disconnect(); } catch(_){ } processor.onaudioprocess = null; processor = null; }
+      if (source) { try { source.disconnect(); } catch(_){ } source = null; }
+      if (audioCtxIn) { try { audioCtxIn.close(); } catch(_){ } audioCtxIn = null; }
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+      if (ws && ws.readyState === WebSocket.OPEN){ ws.send(JSON.stringify({ type: 'audio.commit' })); }
+      log('Mic stopped');
+    }
+
+    function sayText(){
+      const el = document.getElementById('sayText');
+      const v = el ? el.value.trim() : '';
+      if (!v) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) connectWS();
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'response.create_with_instructions', text: v }));
+          log('Sent text instruction');
+        }
+      }, 200);
+    }
+
+    async function startSession(){
+      connectWS();
+      await new Promise(r => setTimeout(r, 300));
+      await startMic();
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'response.create_with_instructions',
+            text: 'Please greet briefly (in Chinese). Reply only: Hello, I am a medical assistant. How can I help you?'
+          }));
+          log('Sent greeting');
+        }
+      }, 200);
+    }
+    async function stopSession(){
+      await stopMic();
+      hardMuteOut();
+      try { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'control.stop' })); }} catch(_) {}
+    }
+
+    function clearAll(){
+      textEl.textContent = '';
+      logs.textContent = '';
+      soapSubj.textContent = '';
+      soapObj.textContent = '';
+      soapAssess.textContent = '';
+      soapPlan.textContent = '';
+      finalizeAsked = false;
+      sessionFinalized = false;
+    }
+
+    // Utils
+    function downsampleTo24k(input, inRate, outRate){
+      if (outRate !== 24000) throw new Error('outRate must be 24000');
+      const ratio = Math.floor(inRate / outRate);
+      if (ratio <= 1) return input;
+      const outLen = Math.floor(input.length / ratio);
+      const output = new Float32Array(outLen);
+      for (let i=0, j=0; j<outLen; j++, i+=ratio){
+        const a = input[i];
+        const b = input[i+1] || a;
+        output[j] = 0.5*(a+b);
+      }
+      return output;
+    }
+    function floatTo16BitPCM(floats){
+      const out = new Int16Array(floats.length);
+      for (let i=0; i<floats.length; i++){
+        let s = Math.max(-1, Math.min(1, floats[i]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      return out;
+    }
+    function base64FromArrayBuffer(buf){
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      for (let i=0; i<bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+    function base64ToUint8Array(b64){
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i=0; i<bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    function playPcm16Chunk(bytes){
+      if (!audioCtxOut) audioCtxOut = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 24000});
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const len = bytes.byteLength / 2;
+      if (len <= 0) return;
+      const floats = new Float32Array(len);
+      for (let i=0; i<len; i++){
+        const s = dv.getInt16(i*2, true);
+        floats[i] = s / 0x8000;
+      }
+      const buf = audioCtxOut.createBuffer(1, floats.length, 24000);
+      buf.copyToChannel(floats, 0, 0);
+      const src = audioCtxOut.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtxOut.destination);
+      const now = audioCtxOut.currentTime;
+      const dur = floats.length / 24000;
+      if (nextPlayTime < now + 0.02) nextPlayTime = now + 0.02;
+      try { src.start(nextPlayTime); } catch(_) { src.start(); }
+      nextPlayTime += dur;
+    }
+
+    // Bind buttons
+    document.getElementById('btn-start').onclick = startSession;
+    document.getElementById('btn-stop').onclick = stopSession;
+    document.getElementById('btn-finalize').onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const ctx = textEl.textContent.slice(-4000);
+        const pid = currentPid();
+        const payload = { type: 'finalize.force', context: ctx };
+        if (pid !== null) payload.patient_id = pid;
+        ws.send(JSON.stringify(payload));
+        log('Submitted SOAP request (manual)');
+      }
+    };
+    document.getElementById('btn-clear').onclick = clearAll;
+    logs.addEventListener('dblclick', () => {
+      if (sessionFinalized) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const ok = window.confirm('Generate SOAP now?');
+        if (!ok) return;
+        const ctx = textEl.textContent.slice(-4000);
+        const pid = currentPid();
+        const payload = { type: 'soap.finalize', context: ctx };
+        if (pid !== null) payload.patient_id = pid;
+        ws.send(JSON.stringify(payload));
+        log('Submitted SOAP request (doctor confirmed)');
+      }
+    });
+  </script>
+</body>
+</html>

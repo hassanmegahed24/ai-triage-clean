@@ -1,0 +1,10 @@
+Input tests:
+
+##patient/ doctor interaction recording/video
+
+"Doctor: Good morning, can you tell me what brought you in today?\nPatient: Yes, I’ve been having chest pain since yesterday.\nDoctor: Can you describe the pain?\nPatient: It feels like a pressure in the middle of my chest, and sometimes it goes into my left arm.\nDoctor: Do you have any other symptoms?\nPatient: I’ve been short of breath and felt a little nauseous. No cough or fever though.\nDoctor: Do you have any medical conditions?\nPatient: I have high blood pressure and type 2 diabetes.\nDoctor: Are you taking any medications?\nPatient: Yes, I take metformin and lisinopril.\nDoctor: Let me check your vitals. Your blood pressure is 150 over 90, heart rate 98, respiratory rate 22, and oxygen is 95%. You look a little sweaty and anxious./nDoctor: I’ll also order some labs and an ECG. Your glucose is 210, and we’re waiting for your troponin results."
+
+##doctor summary post interaction 
+
+"The patient is a 45-year-old male presenting with chest pain that started yesterday.\nHe describes the pain as a pressure in the middle of his chest that radiates to his left arm.\nHe reports associated shortness of breath and mild nausea. No cough, fever, or recent illness.Past medical history includes hypertension and type 2 diabetes.\nHe is currently taking metformin and lisinopril.\nOn exam, the patient appears anxious and slightly diaphoretic.\nVital signs: blood pressure 150/90, heart rate 98, respiratory rate 22, O2 saturation 95% on room air.\nCardiac exam shows normal heart sounds, no murmurs. Lungs are clear.No peripheral edema.Recent labs: blood glucose 210 mg/dL, troponin pending."
+
